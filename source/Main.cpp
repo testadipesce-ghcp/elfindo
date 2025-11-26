@@ -26,6 +26,7 @@
 #include <list>
 #include <mutex>
 #include <pwd.h>
+#include <regex>
 #include <signal.h>
 #include <stack>
 #include <sstream>
@@ -43,6 +44,7 @@
 #define ARG_ACLCHECK_LONG	"aclcheck"
 #define ARG_COPYDEST_LONG	"copyto"
 #define ARG_FILTER_CTIME	"ctime"
+#define ARG_EXCLUDEDIR_LONG	"excludedir"
 #define ARG_EXEC_LONG		"exec"
 #define ARG_GID_LONG		"gid"
 #define ARG_GODEEP_LONG		"godeep"
@@ -147,6 +149,7 @@ struct Config
 	bool copyTimeUpdate {true}; // update atime/mtime when copying files
 	ExternalProgExec exec; // config to execute external prog for each disovered entry
 	bool quitAfterFirstMatch {false}; // true to quit after first match
+	std::vector<std::regex> excludedirRegexVec;
 } config;
 
 struct State
@@ -367,6 +370,23 @@ std::string escapeStrforJSON(const std::string &string)
 	}
 
 	return stringStream.str();
+}
+
+/**
+ * Return true if the given path matches any exclude regex.
+ */
+bool isExcludedir(const std::string& path)
+{
+    for (const auto& rx : config.excludedirRegexVec)
+    {
+        if (std::regex_search(path, rx))
+		{
+			if(config.printVerbose)
+				fprintf(stderr, " --> excluded: %s\n", path.c_str() );
+			return true;
+		}
+    }
+    return false;
 }
 
 /**
@@ -1189,6 +1209,8 @@ void scan(std::string path, const unsigned short dirDepth)
 		if(dirEntry->d_type == DT_DIR ||
 			( (dirEntry->d_type == DT_UNKNOWN) && !statErrno && S_ISDIR(statBuf.st_mode) ) )
 		{ // this entry is a directory
+			if (isExcludedir(entryPath))
+				continue;
 			statistics.numDirsFound++;
 
 			checkACLs(entryPath.c_str(), true);
@@ -1321,64 +1343,67 @@ void printUsageAndExit()
 	std::cout << "USAGE: " EXE_NAME " [OPTIONS...] [PATHS...]" << std::endl;
 	std::cout << std::endl;
 	std::cout << "OPTIONS (in alphabetical order):" << std::endl;
-	std::cout << "  --atime NUM       - atime filter based on number of days in the past." << std::endl;
-	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
-	std::cout << "  --aclcheck        - Query ACLs of all discovered entries." << std::endl;
-	std::cout << "                      (Just for testing, does not change the result set.)" << std::endl;
-	std::cout << "  --copyto PATH     - Copy discovered files and dirs to this directory." << std::endl;
-	std::cout << "                      Only regular files, dirs and symlinks will be copied." << std::endl;
-	std::cout << "                      Hardlinks will not be preserved. Source and" << std::endl;
-	std::cout << "                      destination have to be dirs." << std::endl;
-	std::cout << "  --ctime NUM       - ctime filter based on number of days in the past." << std::endl;
-	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
-	std::cout << "  --exec CMD ARGs ; - Execute the given system command and arguments for each" << std::endl;
-	std::cout << "                      discovered file/dir. The string '{}' in any arg will get" << std::endl;
-	std::cout << "                      replaced by the current file/dir path. The argument ';'" << std::endl;
-	std::cout << "                      marks the end of the command line to run." << std::endl;
-	std::cout << "                      (Example: elfindo --exec ls -lhd '{}' \\; --type d)" << std::endl;
-	std::cout << "  --gid NUM         - Filter based on numeric group ID." << std::endl;
-	std::cout << "  --godeep NUM      - Threshold to switch from breadth to depth search." << std::endl;
-	std::cout << "                      (Default: number of scan threads)" << std::endl;
-	std::cout << "  --group STR       - Filter based on group name or numeric group ID." << std::endl;
-	std::cout << "  --json            - Print entries in JSON format. Each file/dir is a" << std::endl;
-	std::cout << "                      separate JSON root object. Contained data depends on" << std::endl;
-	std::cout << "                      whether \"--" ARG_STAT_LONG "\" is given." << std::endl;
-	std::cout << "                      (Hint: Consider the \"jq\" tool to filter results.)" << std::endl;
-	std::cout << "  --maxdepth        - Max directory depth to scan. (Path arguments have" << std::endl;
-	std::cout << "                      depth 0.)" << std::endl;
-	std::cout << "  --mount           - Alias for \"--xdev\"." << std::endl;
-	std::cout << "  --mtime NUM       - mtime filter based on number of days in the past." << std::endl;
-	std::cout << "                      +/- prefix to match older or more recent values." << std::endl;
-	std::cout << "  --name PATTERN    - Filter on name of file or current dir. Pattern may" << std::endl;
-	std::cout << "                      contain '*' & '?' as wildcards. This parameter can be" << std::endl;
-	std::cout << "                      given multiple times, in which case filenames matching" << std::endl;
-	std::cout << "                      any of the given patterns will pass." << std::endl;
-	std::cout << "                      the filter." << std::endl;
-	std::cout << "  --newer PATH      - Filter based on more recent mtime than given path." << std::endl;
-	std::cout << "  --noprint         - Do not print names of discovered files and dirs." << std::endl;
-	std::cout << "  --nosummary       - Disable summary output to stderr." << std::endl;
-	std::cout << "  --notimeupd       - Do not update atime/mtime of copied files." << std::endl;
-	std::cout << "  --path PATTERN    - Filter on path of discovered entries." << std::endl;
-	std::cout << "                      Pattern may contain '*' & '?' as wildcards." << std::endl;
-	std::cout << "  --print0          - Terminate printed entries with null instead of newline." << std::endl;
-	std::cout << "                      (Hint: This goes nicely with \"xargs -0\".)" << std::endl;
-	std::cout << "  --quit            - Terminate after first match. (Note: With multiple threads" << std::endl;
-	std::cout << "                      it's possible that more than one match gets printed." << std::endl;
-	std::cout << "                      Consider combining this with \"| head -n 1\".)" << std::endl;
-	std::cout << "  --size NUM        - Size filter." << std::endl;
-	std::cout << "                      +/- prefix to match greater or smaller values." << std::endl;
-	std::cout << "                      Default unit is 512-byte blocks." << std::endl;
-	std::cout << "                      'c' suffix to specify bytes instead of 512-byte blocks." << std::endl;
-	std::cout << "                      'k'/'M'/'G' suffix for KiB/MiB/GiB units." << std::endl;
-	std::cout << "  --stat            - Query attributes of all discovered files & dirs." << std::endl;
-	std::cout << "  -t, --threads NUM - Number of scan threads. (Default: 16)" << std::endl;
-	std::cout << "  --type TYPE       - Search type. 'f' for regular files, 'd' for directories." << std::endl;
-	std::cout << "  --uid NUM         - Filter based on numeric user ID." << std::endl;
-	std::cout << "  --unlink          - Delete discovered files, not dirs." << std::endl;
-	std::cout << "  --user STR        - Filter based on user name or numeric user ID." << std::endl;
-	std::cout << "  --verbose         - Enable verbose output." << std::endl;
-	std::cout << "  --version         - Print version and exit." << std::endl;
-	std::cout << "  --xdev            - Don't descend directories on other filesystems." << std::endl;
+	std::cout << "  --atime NUM        - atime filter based on number of days in the past." << std::endl;
+	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
+	std::cout << "  --aclcheck         - Query ACLs of all discovered entries." << std::endl;
+	std::cout << "                       (Just for testing, does not change the result set.)" << std::endl;
+	std::cout << "  --copyto PATH      - Copy discovered files and dirs to this directory." << std::endl;
+	std::cout << "                       Only regular files, dirs and symlinks will be copied." << std::endl;
+	std::cout << "                       Hardlinks will not be preserved. Source and" << std::endl;
+	std::cout << "                       destination have to be dirs." << std::endl;
+	std::cout << "  --ctime NUM        - ctime filter based on number of days in the past." << std::endl;
+	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
+	std::cout << "  --excludedir REGEX - Exclude directories from scanning whose path matches the given regular expression." << std::endl;
+	std::cout << "                       You can specify this option multiple times to exclude directories matching any of the provided patterns." << std::endl;
+	std::cout << "                       (Example: --excludedir '^/tmp' --excludedir 'backup$')" << std::endl;
+	std::cout << "  --exec CMD ARGs ;  - Execute the given system command and arguments for each" << std::endl;
+	std::cout << "                       discovered file/dir. The string '{}' in any arg will get" << std::endl;
+	std::cout << "                       replaced by the current file/dir path. The argument ';'" << std::endl;
+	std::cout << "                       marks the end of the command line to run." << std::endl;
+	std::cout << "                       (Example: elfindo --exec ls -lhd '{}' \\; --type d)" << std::endl;
+	std::cout << "  --gid NUM          - Filter based on numeric group ID." << std::endl;
+	std::cout << "  --godeep NUM       - Threshold to switch from breadth to depth search." << std::endl;
+	std::cout << "                       (Default: number of scan threads)" << std::endl;
+	std::cout << "  --group STR        - Filter based on group name or numeric group ID." << std::endl;
+	std::cout << "  --json             - Print entries in JSON format. Each file/dir is a" << std::endl;
+	std::cout << "                       separate JSON root object. Contained data depends on" << std::endl;
+	std::cout << "                       whether \"--" ARG_STAT_LONG "\" is given." << std::endl;
+	std::cout << "                       (Hint: Consider the \"jq\" tool to filter results.)" << std::endl;
+	std::cout << "  --maxdepth         - Max directory depth to scan. (Path arguments have" << std::endl;
+	std::cout << "                       depth 0.)" << std::endl;
+	std::cout << "  --mount            - Alias for \"--xdev\"." << std::endl;
+	std::cout << "  --mtime NUM        - mtime filter based on number of days in the past." << std::endl;
+	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
+	std::cout << "  --name PATTERN     - Filter on name of file or current dir. Pattern may" << std::endl;
+	std::cout << "                       contain '*' & '?' as wildcards. This parameter can be" << std::endl;
+	std::cout << "                       given multiple times, in which case filenames matching" << std::endl;
+	std::cout << "                       any of the given patterns will pass." << std::endl;
+	std::cout << "                       the filter." << std::endl;
+	std::cout << "  --newer PATH       - Filter based on more recent mtime than given path." << std::endl;
+	std::cout << "  --noprint          - Do not print names of discovered files and dirs." << std::endl;
+	std::cout << "  --nosummary        - Disable summary output to stderr." << std::endl;
+	std::cout << "  --notimeupd        - Do not update atime/mtime of copied files." << std::endl;
+	std::cout << "  --path PATTERN     - Filter on path of discovered entries." << std::endl;
+	std::cout << "                       Pattern may contain '*' & '?' as wildcards." << std::endl;
+	std::cout << "  --print0           - Terminate printed entries with null instead of newline." << std::endl;
+	std::cout << "                       (Hint: This goes nicely with \"xargs -0\".)" << std::endl;
+	std::cout << "  --quit             - Terminate after first match. (Note: With multiple threads" << std::endl;
+	std::cout << "                       it's possible that more than one match gets printed." << std::endl;
+	std::cout << "                       Consider combining this with \"| head -n 1\".)" << std::endl;
+	std::cout << "  --size NUM         - Size filter." << std::endl;
+	std::cout << "                       +/- prefix to match greater or smaller values." << std::endl;
+	std::cout << "                       Default unit is 512-byte blocks." << std::endl;
+	std::cout << "                       'c' suffix to specify bytes instead of 512-byte blocks." << std::endl;
+	std::cout << "                       'k'/'M'/'G' suffix for KiB/MiB/GiB units." << std::endl;
+	std::cout << "  --stat             - Query attributes of all discovered files & dirs." << std::endl;
+	std::cout << "  -t, --threads NUM  - Number of scan threads. (Default: 16)" << std::endl;
+	std::cout << "  --type TYPE        - Search type. 'f' for regular files, 'd' for directories." << std::endl;
+	std::cout << "  --uid NUM          - Filter based on numeric user ID." << std::endl;
+	std::cout << "  --unlink           - Delete discovered files, not dirs." << std::endl;
+	std::cout << "  --user STR         - Filter based on user name or numeric user ID." << std::endl;
+	std::cout << "  --verbose          - Enable verbose output." << std::endl;
+	std::cout << "  --version          - Print version and exit." << std::endl;
+	std::cout << "  --xdev             - Don't descend directories on other filesystems." << std::endl;
 	std::cout << std::endl;
 	std::cout << "Examples:" << std::endl;
 	std::cout << "  Find all files and dirs under /data/mydir:" << std::endl;
@@ -1657,6 +1682,7 @@ void parseArguments(int argc, char** argv)
 		{
 				{ ARG_ACLCHECK_LONG, no_argument, 0, 0 },
 				{ ARG_COPYDEST_LONG, required_argument, 0, 0 },
+				{ ARG_EXCLUDEDIR_LONG, required_argument, 0, 0 },
 				{ ARG_EXEC_LONG, no_argument, 0, 0 },
 				{ ARG_FILTER_ATIME, required_argument, 0, 0 },
 				{ ARG_FILTER_CTIME, required_argument, 0, 0 },
@@ -1719,6 +1745,20 @@ void parseArguments(int argc, char** argv)
 				{
 					config.copyDestDir = optarg;
 					config.statAll = true; // to be able to rely on type in statBuf and for mtime
+				}
+				else
+				if(ARG_EXCLUDEDIR_LONG == currentOptionName)
+				{
+					try
+					{
+						std::string regexStr = optarg;
+						config.excludedirRegexVec.push_back(std::regex(regexStr) );
+					}
+					catch (const std::regex_error& e)
+					{
+						fprintf(stderr, "Aborting due to error with regex provided: %s (%s)\n", optarg, e.what());
+						exit(EXIT_FAILURE);
+					}
 				}
 				else
 				if(ARG_EXEC_LONG == currentOptionName)
