@@ -105,8 +105,11 @@
 
 typedef std::vector<std::string> StringVec;
 
-// short-hand macro to either return or exit on fatal errors depending on user config
-#define EXIT_OR_RETURN_CONFIGURABLE(ignoreError)	{ if(ignoreError) return; else exit(1); }
+/**
+ * short-hand macro to either return or exit on fatal errors depending on user config.
+ * note: we use std::_Exit() instead of exit() because exit() is not thread-safe.
+ */
+#define EXIT_OR_RETURN_CONFIGURABLE(ignoreError)	{ if(ignoreError) return; else std::_Exit(1); }
 
 struct ExternalProgExec
 {
@@ -714,7 +717,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			fprintf(stderr, "Failed to allocate memory buffer for symlink copy. Alloc size: %u\n",
 				bufSize);
 
-			exit(EXIT_FAILURE);
+			std::_Exit(EXIT_FAILURE);
 		}
 
 		ssize_t readRes = readlink(entryPath.c_str(), buf, bufSize);
@@ -816,7 +819,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			fprintf(stderr, "Failed to allocate memory buffer for file copy. Alloc size: %u\n",
 				bufSize);
 
-			exit(EXIT_FAILURE);
+			std::_Exit(EXIT_FAILURE);
 		}
 
 		// copy file contents
