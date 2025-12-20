@@ -8,7 +8,7 @@ EXTERNAL_BASE_DIR="$(pwd)/$(dirname $0)"
 # Prepare git clone and required tag.
 prepare_mimalloc()
 {
-	local REQUIRED_TAG="v2.0.6"
+	local REQUIRED_TAG="v2.2.4"
 	local CURRENT_TAG
 	local CLONE_DIR="${EXTERNAL_BASE_DIR}/mimalloc"
 	local INSTALL_DIR="${EXTERNAL_BASE_DIR}/mimalloc/build"

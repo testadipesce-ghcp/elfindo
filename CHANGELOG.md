@@ -1,5 +1,13 @@
 # Changelog of elfindo
 
+## v1.0.5 (Dec 20, 2025)
+
+### New Features & Enhancements
+* New option to exclude directories based on regular expressions. (See `--excludedir`.)
+
+### Contributors
+* Thanks to Oriol Mula Valls for code contribution.
+
 ## v1.0.3 (Sep 24, 2024)
 
 ### New Features & Enhancements
