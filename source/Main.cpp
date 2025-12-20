@@ -39,7 +39,7 @@
 #include <unistd.h>
 #include <vector>
 
-
+// note: these arg defines are alphabetically ordered by option string value
 #define ARG_FILTER_ATIME	"atime"
 #define ARG_ACLCHECK_LONG	"aclcheck"
 #define ARG_COPYDEST_LONG	"copyto"
@@ -149,7 +149,7 @@ struct Config
 	bool copyTimeUpdate {true}; // update atime/mtime when copying files
 	ExternalProgExec exec; // config to execute external prog for each disovered entry
 	bool quitAfterFirstMatch {false}; // true to quit after first match
-	std::vector<std::regex> excludedirRegexVec;
+	std::vector<std::regex> excludeDirRegexVec; // dirs to exclude from search
 } config;
 
 struct State
@@ -375,17 +375,19 @@ std::string escapeStrforJSON(const std::string &string)
 /**
  * Return true if the given path matches any exclude regex.
  */
-bool isExcludedir(const std::string& path)
+bool isExcludeDir(const std::string& path)
 {
-    for (const auto& rx : config.excludedirRegexVec)
+    for(const auto& rx : config.excludeDirRegexVec)
     {
-        if (std::regex_search(path, rx))
+        if(std::regex_search(path, rx) )
 		{
 			if(config.printVerbose)
 				fprintf(stderr, " --> excluded: %s\n", path.c_str() );
+
 			return true;
 		}
     }
+
     return false;
 }
 
@@ -1209,8 +1211,9 @@ void scan(std::string path, const unsigned short dirDepth)
 		if(dirEntry->d_type == DT_DIR ||
 			( (dirEntry->d_type == DT_UNKNOWN) && !statErrno && S_ISDIR(statBuf.st_mode) ) )
 		{ // this entry is a directory
-			if (isExcludedir(entryPath))
+			if(isExcludeDir(entryPath) )
 				continue;
+
 			statistics.numDirsFound++;
 
 			checkACLs(entryPath.c_str(), true);
@@ -1353,8 +1356,10 @@ void printUsageAndExit()
 	std::cout << "                       destination have to be dirs." << std::endl;
 	std::cout << "  --ctime NUM        - ctime filter based on number of days in the past." << std::endl;
 	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
-	std::cout << "  --excludedir REGEX - Exclude directories from scanning whose path matches the given regular expression." << std::endl;
-	std::cout << "                       You can specify this option multiple times to exclude directories matching any of the provided patterns." << std::endl;
+	std::cout << "  --excludedir REGEX - Exclude directories from scanning whose path matches" << std::endl;
+	std::cout << "                       the given regular expression. You can specify this option" << std::endl;
+	std::cout << "                       multiple times to exclude dirs matching any of the" << std::endl;
+	std::cout << "                       provided patterns." << std::endl;
 	std::cout << "                       (Example: --excludedir '^/tmp' --excludedir 'backup$')" << std::endl;
 	std::cout << "  --exec CMD ARGs ;  - Execute the given system command and arguments for each" << std::endl;
 	std::cout << "                       discovered file/dir. The string '{}' in any arg will get" << std::endl;
@@ -1752,7 +1757,7 @@ void parseArguments(int argc, char** argv)
 					try
 					{
 						std::string regexStr = optarg;
-						config.excludedirRegexVec.push_back(std::regex(regexStr) );
+						config.excludeDirRegexVec.push_back(std::regex(regexStr) );
 					}
 					catch (const std::regex_error& e)
 					{
@@ -2055,4 +2060,3 @@ int main(int argc, char** argv)
 
 	return retVal;
 }
-
