@@ -1184,11 +1184,26 @@ void scan(std::string path, const unsigned short dirDepth)
 		if(!strcmp(dirEntry->d_name, ".") || !strcmp(dirEntry->d_name, "..") )
 			continue;
 
+		std::string entryPath(path + "/" + dirEntry->d_name);
+		const bool nameFilterMatches = filterPrintEntryByName(entryPath, dirEntry, NULL);
+
+		// A name mismatch cannot produce a match for any later filter or action.
+		// Keep scanning directories, but avoid stat() for known non-directories.
+		if(!nameFilterMatches && (dirEntry->d_type != DT_DIR) &&
+			(dirEntry->d_type != DT_UNKNOWN) )
+			continue;
+
 		struct stat statBuf;
 		int statErrno = -1; // "-1" to let clear that statBuf is not usable yet
 
-		// if dentry type is unknown then we have to stat to know if this is a dir to descend into
-		if(config.statAll || (dirEntry->d_type == DT_UNKNOWN) )
+		// Unknown types must be stat'ed to determine whether they are directories.
+		// For a name mismatch, stat known directories only when mount filtering needs
+		// their device ID to decide whether traversal may continue.
+		const bool statRequiredForTraversal =
+			!nameFilterMatches && (config.filterMountID != (~0ULL)) &&
+			(dirEntry->d_type == DT_DIR);
+		if((nameFilterMatches && config.statAll) ||
+			(dirEntry->d_type == DT_UNKNOWN) || statRequiredForTraversal)
 		{
 			statistics.numStatCalls++;
 
@@ -1209,8 +1224,6 @@ void scan(std::string path, const unsigned short dirDepth)
 		if(dirEntry->d_type == DT_UNKNOWN)
 			statistics.numUnknownFound++;
 
-		std::string entryPath(path + "/" + dirEntry->d_name);
-
 		if(dirEntry->d_type == DT_DIR ||
 			( (dirEntry->d_type == DT_UNKNOWN) && !statErrno && S_ISDIR(statBuf.st_mode) ) )
 		{ // this entry is a directory
@@ -1219,9 +1232,12 @@ void scan(std::string path, const unsigned short dirDepth)
 
 			statistics.numDirsFound++;
 
-			checkACLs(entryPath.c_str(), true);
+			if(nameFilterMatches)
+			{
+				checkACLs(entryPath.c_str(), true);
 
-			processDiscoveredEntry(entryPath, dirEntry, statErrno ? NULL : &statBuf);
+				processDiscoveredEntry(entryPath, dirEntry, statErrno ? NULL : &statBuf);
+			}
 
 			const bool doDescendDepth = (dirDepth < config.maxDirDepth);
 			const bool doDescendMount = (config.filterMountID == (~0ULL) ) ? true :
@@ -1239,9 +1255,12 @@ void scan(std::string path, const unsigned short dirDepth)
 		{ // this entry is not a directory (or unknown with stat() error)
 			statistics.numFilesFound++;
 
-			checkACLs(entryPath.c_str(), false);
+			if(nameFilterMatches)
+			{
+				checkACLs(entryPath.c_str(), false);
 
-			processDiscoveredEntry(entryPath, dirEntry, statErrno ? NULL : &statBuf);
+				processDiscoveredEntry(entryPath, dirEntry, statErrno ? NULL : &statBuf);
+			}
 		}
 
 	}
