@@ -22,6 +22,7 @@
 #include <inttypes.h> // defines PRIu64 for printf uint64_t
 #include <iostream>
 #include <iomanip>
+#include <linux/stat.h>
 #include <libgen.h>
 #include <list>
 #include <mutex>
@@ -32,7 +33,9 @@
 #include <sstream>
 #include <string>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/sysmacros.h>
 #include <sys/xattr.h>
 #include <time.h>
 #include <thread>
@@ -41,6 +44,7 @@
 
 // note: these arg defines are alphabetically ordered by option string value
 #define ARG_FILTER_ATIME	"atime"
+#define ARG_FILTER_BTIME	"btime"
 #define ARG_ACLCHECK_LONG	"aclcheck"
 #define ARG_COPYDEST_LONG	"copyto"
 #define ARG_FILTER_CTIME	"ctime"
@@ -99,11 +103,52 @@
 #define FILTER_FLAG_ATIME_EXACT		(1 << 9)
 #define FILTER_FLAG_ATIME_LESS		(1 << 10)
 #define FILTER_FLAG_ATIME_GREATER	(1 << 11)
+#define FILTER_FLAG_BTIME_EXACT		(1 << 12)
+#define FILTER_FLAG_BTIME_LESS		(1 << 13)
+#define FILTER_FLAG_BTIME_GREATER		(1 << 14)
 
 #define EXEC_ARG_PATH_PLACEHOLDER	"{}"
 #define EXEC_ARG_TERMINATOR			";"
 
 typedef std::vector<std::string> StringVec;
+
+struct EntryStat : public stat
+{
+	uint64_t stx_btime {0};
+	bool stx_btime_valid {false};
+};
+
+/**
+ * Get entry attributes with statx and expose the traditional stat fields used by elfindo.
+ */
+int getEntryStat(int dirFD, const char* path, int flags, EntryStat& entryStat)
+{
+	struct statx statxBuf {};
+	int statxRes = syscall(SYS_statx, dirFD, path, flags,
+		STATX_BASIC_STATS | STATX_BTIME, &statxBuf);
+
+	if(statxRes)
+		return statxRes;
+
+	static_cast<struct stat&>(entryStat) = {};
+	entryStat.st_dev = makedev(statxBuf.stx_dev_major, statxBuf.stx_dev_minor);
+	entryStat.st_ino = statxBuf.stx_ino;
+	entryStat.st_mode = statxBuf.stx_mode;
+	entryStat.st_nlink = statxBuf.stx_nlink;
+	entryStat.st_uid = statxBuf.stx_uid;
+	entryStat.st_gid = statxBuf.stx_gid;
+	entryStat.st_rdev = makedev(statxBuf.stx_rdev_major, statxBuf.stx_rdev_minor);
+	entryStat.st_size = statxBuf.stx_size;
+	entryStat.st_blksize = statxBuf.stx_blksize;
+	entryStat.st_blocks = statxBuf.stx_blocks;
+	entryStat.st_atim = {statxBuf.stx_atime.tv_sec, statxBuf.stx_atime.tv_nsec};
+	entryStat.st_mtim = {statxBuf.stx_mtime.tv_sec, statxBuf.stx_mtime.tv_nsec};
+	entryStat.st_ctim = {statxBuf.stx_ctime.tv_sec, statxBuf.stx_ctime.tv_nsec};
+	entryStat.stx_btime_valid = (statxBuf.stx_mask & STATX_BTIME) != 0;
+	entryStat.stx_btime = entryStat.stx_btime_valid ? statxBuf.stx_btime.tv_sec : 0;
+
+	return 0;
+}
 
 /**
  * short-hand macro to either return or exit on fatal errors depending on user config.
@@ -138,6 +183,7 @@ struct Config
 		uint64_t mtimeExact {0}, mtimeLess {0}, mtimeGreater {0};
 		uint64_t ctimeExact {0}, ctimeLess {0}, ctimeGreater {0};
 		uint64_t atimeExact {0}, atimeLess {0}, atimeGreater {0};
+		uint64_t btimeExact {0}, btimeLess {0}, btimeGreater {0};
 
 		unsigned filterSizeAndTimeFlags; // FILTER_FLAG_..._{EXACT,LESS,GREATER} flags
 	} filterSizeAndTime;
@@ -402,7 +448,7 @@ bool isExcludeDir(const std::string& path)
  * @return true if entry passes the filter and should be printed, false otherwise.
  */
 bool filterPrintEntryByType(const std::string& entryPath, const struct dirent* dirEntry,
-	const struct stat* statBuf)
+	const EntryStat* statBuf)
 {
 	if(!config.searchType)
 		return true; // no filter defined by user => always passes
@@ -473,7 +519,7 @@ bool filterPrintEntryByType(const std::string& entryPath, const struct dirent* d
  * @return true if entry passes the filter and should be printed, false otherwise.
  */
 bool filterPrintEntryByName(const std::string& entryPath, const struct dirent* dirEntry,
-	const struct stat* statBuf)
+	const EntryStat* statBuf)
 {
 	if(config.nameFilterVec.empty() )
 		return true; // no filter defined by user => always passes
@@ -501,7 +547,7 @@ bool filterPrintEntryByName(const std::string& entryPath, const struct dirent* d
  * @return true if entry passes the filter and should be printed, false otherwise.
  */
 bool filterPrintEntryByPath(const std::string& entryPath, const struct dirent* dirEntry,
-	const struct stat* statBuf)
+	const EntryStat* statBuf)
 {
 	if(config.pathFilter.empty() )
 		return true; // no filter defined by user => always passes
@@ -552,7 +598,7 @@ bool filterPrintEntryByPath(const std::string& entryPath, const struct dirent* d
  * @return true if entry passes the filter and should be printed, false otherwise.
  */
 bool filterPrintEntryBySizeOrTime(const std::string& entryPath, const struct dirent* dirEntry,
-	const struct stat* statBuf)
+	const EntryStat* statBuf)
 {
 	if(!config.filterSizeAndTime.filterSizeAndTimeFlags)
 		return true; // no filter defined by user => always passes
@@ -573,6 +619,19 @@ bool filterPrintEntryBySizeOrTime(const std::string& entryPath, const struct dir
 	CHECK_EXACT_LESS_GREATER_VAL(ctime, CTIME, ctim.tv_sec);
 	CHECK_EXACT_LESS_GREATER_VAL(mtime, MTIME, mtim.tv_sec);
 
+	if(config.filterSizeAndTime.filterSizeAndTimeFlags & FILTER_FLAG_BTIME_EXACT)
+		if(!statBuf->stx_btime_valid ||
+			(uint64_t)statBuf->stx_btime != config.filterSizeAndTime.btimeExact)
+			return false;
+	if(config.filterSizeAndTime.filterSizeAndTimeFlags & FILTER_FLAG_BTIME_LESS)
+		if(!statBuf->stx_btime_valid ||
+			(uint64_t)statBuf->stx_btime >= config.filterSizeAndTime.btimeLess)
+			return false;
+	if(config.filterSizeAndTime.filterSizeAndTimeFlags & FILTER_FLAG_BTIME_GREATER)
+		if(!statBuf->stx_btime_valid ||
+			(uint64_t)statBuf->stx_btime <= config.filterSizeAndTime.btimeGreater)
+			return false;
+
 	return true; // all filters passed
 }
 
@@ -584,7 +643,7 @@ bool filterPrintEntryBySizeOrTime(const std::string& entryPath, const struct dir
  * @return true if entry passes the filter and should be printed, false otherwise.
  */
 bool filterPrintEntryByUIDAndGID(const std::string& entryPath, const struct dirent* dirEntry,
-	const struct stat* statBuf)
+	const EntryStat* statBuf)
 {
 	// filter UID
 	if(config.filterUID != ~0ULL)
@@ -665,7 +724,7 @@ void execSystemCommand(const std::string& entryPath)
  * This won't preserve hardlinks.
  */
 void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
-	const struct stat* statBuf)
+	const EntryStat* statBuf)
 {
 	if(config.copyDestDir.empty() )
 		return;
@@ -904,7 +963,7 @@ void copyEntry(const std::string& entryPath, const struct dirent* dirEntry,
  * Unlink entry if it's not a directory.
  */
 void unlinkEntry(const std::string& entryPath, const struct dirent* dirEntry,
-	const struct stat* statBuf)
+	const EntryStat* statBuf)
 {
 	if(!config.unlinkFiles)
 		return;
@@ -941,7 +1000,7 @@ void unlinkEntry(const std::string& entryPath, const struct dirent* dirEntry,
  * 		cases where it can still be NULL, e.g. if the stat() call returned an error.
  */
 void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
-	const struct stat* statBuf)
+	const EntryStat* statBuf)
 {
 	if(config.printEntriesDisabled)
 		return;
@@ -1041,7 +1100,8 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			"\"st_blocks\":\"%" PRIu64 "\","
 			"\"st_atime\":\"%" PRIu64 "\","
 			"\"st_mtime\":\"%" PRIu64 "\","
-			"\"st_ctime\":\"%" PRIu64 "\""
+				"\"st_ctime\":\"%" PRIu64 "\","
+				"\"stx_btime\":%s"
 			"}\n",
 			escapeStrforJSON(entryPath).c_str(),
 			dirEntryJSONType.c_str(),
@@ -1057,7 +1117,8 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			(uint64_t)statBuf->st_blocks,
 			(uint64_t)statBuf->st_atime,
 			(uint64_t)statBuf->st_mtime,
-			(uint64_t)statBuf->st_ctime);
+			(uint64_t)statBuf->st_ctime,
+			statBuf->stx_btime_valid ? std::to_string(statBuf->stx_btime).c_str() : "null");
 	}
 	else
 	{ // no statBuf (probably due to stat() error), so most fields are empty
@@ -1076,7 +1137,8 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			"\"st_blocks\":null,"
 			"\"st_atime\":null,"
 			"\"st_mtime\":null,"
-			"\"st_ctime\":null"
+			"\"st_ctime\":null,"
+			"\"stx_btime\":null"
 			"}\n",
 			escapeStrforJSON(entryPath).c_str(),
 			dirEntryJSONType.c_str() );
@@ -1096,7 +1158,7 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
  * 		cases where it can still be NULL, e.g. if the stat() call returned an error.
  */
 void processDiscoveredEntry(const std::string& entryPath, const struct dirent* dirEntry,
-	const struct stat* statBuf)
+	const EntryStat* statBuf)
 {
 	// filters
 
@@ -1193,7 +1255,7 @@ void scan(std::string path, const unsigned short dirDepth)
 			(dirEntry->d_type != DT_UNKNOWN) )
 			continue;
 
-		struct stat statBuf;
+		EntryStat statBuf;
 		int statErrno = -1; // "-1" to let clear that statBuf is not usable yet
 
 		// Unknown types must be stat'ed to determine whether they are directories.
@@ -1207,8 +1269,8 @@ void scan(std::string path, const unsigned short dirDepth)
 		{
 			statistics.numStatCalls++;
 
-			int statRes = fstatat(dirfd(dirStream), dirEntry->d_name, &statBuf,
-				AT_SYMLINK_NOFOLLOW);
+			int statRes = getEntryStat(dirfd(dirStream), dirEntry->d_name,
+				AT_SYMLINK_NOFOLLOW, statBuf);
 
 			if(!statRes)
 				statErrno = 0; // success, so mark statBuf as usable
@@ -1369,6 +1431,8 @@ void printUsageAndExit()
 	std::cout << std::endl;
 	std::cout << "OPTIONS (in alphabetical order):" << std::endl;
 	std::cout << "  --atime NUM        - atime filter based on number of days in the past." << std::endl;
+	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
+	std::cout << "  --btime NUM        - creation time filter based on number of days in the past." << std::endl;
 	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --aclcheck         - Query ACLs of all discovered entries." << std::endl;
 	std::cout << "                       (Just for testing, does not change the result set.)" << std::endl;
@@ -1708,6 +1772,7 @@ void parseArguments(int argc, char** argv)
 		static struct option long_options[] =
 		{
 				{ ARG_ACLCHECK_LONG, no_argument, 0, 0 },
+				{ ARG_FILTER_BTIME, required_argument, 0, 0 },
 				{ ARG_COPYDEST_LONG, required_argument, 0, 0 },
 				{ ARG_EXCLUDEDIR_LONG, required_argument, 0, 0 },
 				{ ARG_EXEC_LONG, no_argument, 0, 0 },
@@ -1767,6 +1832,9 @@ void parseArguments(int argc, char** argv)
 
 				if(ARG_ACLCHECK_LONG == currentOptionName)
 					config.checkACLs = true;
+				else
+				if(ARG_FILTER_BTIME == currentOptionName)
+					PARSE_EXACT_LESS_GREATER_VAL(optarg, btime, BTIME);
 				else
 				if(ARG_COPYDEST_LONG == currentOptionName)
 				{
@@ -1987,10 +2055,11 @@ void parseArguments(int argc, char** argv)
 		(init of this is here because we need to have scan paths initialized.) */
 	if(needFilterByDevIDInit)
 	{
-		struct stat statBuf;
+		EntryStat statBuf;
 
-		int statRes = stat(config.scanPaths.empty() ? "." : config.scanPaths.front().c_str(),
-			&statBuf);
+		int statRes = getEntryStat(AT_FDCWD,
+			config.scanPaths.empty() ? "." : config.scanPaths.front().c_str(),
+			AT_SYMLINK_NOFOLLOW, statBuf);
 
 		if(statRes != 0)
 		{
@@ -2020,9 +2089,10 @@ int main(int argc, char** argv)
 	// check entry type of user-given paths and add dirs to stack
 	for(std::string currentPath : config.scanPaths)
 	{
-		struct stat statBuf;
+		EntryStat statBuf;
 
-		int statRes = lstat(currentPath.c_str(), &statBuf);
+		int statRes = getEntryStat(AT_FDCWD, currentPath.c_str(), AT_SYMLINK_NOFOLLOW,
+			statBuf);
 
 		if(statRes)
 		{
