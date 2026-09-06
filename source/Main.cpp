@@ -37,6 +37,7 @@
 #include <sys/types.h>
 #include <sys/sysmacros.h>
 #include <sys/xattr.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <thread>
 #include <unistd.h>
@@ -721,33 +722,57 @@ void execSystemCommand(const std::string& entryPath)
 	if(config.exec.cmdLineStrVec.empty() )
 		return; // nothing to do
 
-	std::string commandStr;
+	StringVec commandArgs;
+	commandArgs.reserve(config.exec.cmdLineStrVec.size() );
 
-	// add executable
-	commandStr.append("'");
-	commandStr.append(config.exec.cmdLineStrVec[0] );
-	commandStr.append("' ");
-
-	// add args and replace placeholder with path
-	for(size_t i=1; i < config.exec.cmdLineStrVec.size(); i++)
+	for(const std::string& commandArg : config.exec.cmdLineStrVec)
 	{
-		std::string argStr(config.exec.cmdLineStrVec[i] );
+		std::string argStr(commandArg);
 
 		replacePathPlaceholerWithPath(argStr, entryPath);
-
-		commandStr.append("'");
-		commandStr.append(argStr);
-		commandStr.append("' ");
+		commandArgs.push_back(argStr);
 	}
 
-	// flush is necessary for cases where stdout is not line-buffered, e.g. because it's not a tty.
+	std::vector<char*> commandArgv;
+	commandArgv.reserve(commandArgs.size() + 1);
+	for(std::string& commandArg : commandArgs)
+		commandArgv.push_back(commandArg.data() );
+	commandArgv.push_back(NULL);
+
+	// Flush before forking so buffered output is not duplicated in the child.
 	fflush(stdout);
 
-	int sysRes = std::system(commandStr.c_str() );
-	if(WIFSIGNALED(sysRes) )
+	pid_t childPID = fork();
+	if(childPID == -1)
+	{
+		fprintf(stderr, "Failed to fork exec command. Error: %s\n", strerror(errno) );
+		kill(0, SIGTERM);
+		return;
+	}
+
+	if(childPID == 0)
+	{
+		execvp(commandArgv[0], commandArgv.data() );
+		fprintf(stderr, "Failed to execute command: %s; Error: %s\n",
+			commandArgs[0].c_str(), strerror(errno) );
+		std::_Exit(127);
+	}
+
+	int waitStatus;
+	while(waitpid(childPID, &waitStatus, 0) == -1)
+	{
+		if(errno != EINTR)
+		{
+			fprintf(stderr, "Failed to wait for exec command. Error: %s\n", strerror(errno) );
+			kill(0, SIGTERM);
+			return;
+		}
+	}
+
+	if(WIFSIGNALED(waitStatus) )
 	{
 		fprintf(stderr, "Aborting because exec command terminated on signal. "
-			"Signal: %d; Path: %s\n", (int)WTERMSIG(sysRes), entryPath.c_str() );
+			"Signal: %d; Path: %s\n", (int)WTERMSIG(waitStatus), entryPath.c_str() );
 
 		// note: we really need SIGTERM here, as SIGINT does not reliably kill running system cmds
 		kill(0, SIGTERM);
