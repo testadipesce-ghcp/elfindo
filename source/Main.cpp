@@ -45,6 +45,7 @@
 // note: these arg defines are alphabetically ordered by option string value
 #define ARG_FILTER_ATIME	"atime"
 #define ARG_FILTER_BTIME	"btime"
+#define ARG_FILTER_DTIME	"dtime"
 #define ARG_ACLCHECK_LONG	"aclcheck"
 #define ARG_COPYDEST_LONG	"copyto"
 #define ARG_FILTER_CTIME	"ctime"
@@ -116,6 +117,7 @@ struct EntryStat : public stat
 {
 	uint64_t stx_btime {0};
 	bool stx_btime_valid {false};
+	int64_t stx_dtime {0};
 };
 
 /**
@@ -146,6 +148,7 @@ int getEntryStat(int dirFD, const char* path, int flags, EntryStat& entryStat)
 	entryStat.st_ctim = {statxBuf.stx_ctime.tv_sec, statxBuf.stx_ctime.tv_nsec};
 	entryStat.stx_btime_valid = (statxBuf.stx_mask & STATX_BTIME) != 0;
 	entryStat.stx_btime = entryStat.stx_btime_valid ? statxBuf.stx_btime.tv_sec : 0;
+	entryStat.stx_dtime = statxBuf.stx_atime.tv_sec - statxBuf.stx_mtime.tv_sec;
 
 	return 0;
 }
@@ -190,6 +193,8 @@ struct Config
 	uint64_t filterUID {~0ULL}; // numeric user ID
 	uint64_t filterGID {~0ULL}; // numeric group ID
 	uint64_t filterMountID {~0ULL}; // stay on mountpoint
+	bool filterDTimeEnabled {false};
+	int64_t filterDTime {0};
 	std::string copyDestDir; // target dir for file/dir copies
 	bool ignoreCopyErrors {false}; // ignore copy errors
 	bool printEntriesDisabled {false}; // true to disable print of discovered entries
@@ -662,6 +667,18 @@ bool filterPrintEntryByUIDAndGID(const std::string& entryPath, const struct dire
 	return true;
 }
 
+/**
+ * Filter files and directories by the difference between access and modification time.
+ */
+bool filterPrintEntryByDTime(const std::string& entryPath, const struct dirent* dirEntry,
+	const EntryStat* statBuf)
+{
+	if(!config.filterDTimeEnabled)
+		return true;
+
+	return statBuf && (statBuf->stx_dtime < config.filterDTime);
+}
+
 
 /**
  * Replace all occurrences of EXEC_ARG_PATH_PLACEHOLDER in "subject" string with the given "path"
@@ -1101,7 +1118,8 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			"\"st_atime\":\"%" PRIu64 "\","
 			"\"st_mtime\":\"%" PRIu64 "\","
 				"\"st_ctime\":\"%" PRIu64 "\","
-				"\"stx_btime\":%s"
+				"\"stx_btime\":%s,"
+				"\"stx_dtime\":\"%" PRId64 "\""
 			"}\n",
 			escapeStrforJSON(entryPath).c_str(),
 			dirEntryJSONType.c_str(),
@@ -1118,7 +1136,8 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			(uint64_t)statBuf->st_atime,
 			(uint64_t)statBuf->st_mtime,
 			(uint64_t)statBuf->st_ctime,
-			statBuf->stx_btime_valid ? std::to_string(statBuf->stx_btime).c_str() : "null");
+			statBuf->stx_btime_valid ? std::to_string(statBuf->stx_btime).c_str() : "null",
+			statBuf->stx_dtime);
 	}
 	else
 	{ // no statBuf (probably due to stat() error), so most fields are empty
@@ -1138,7 +1157,8 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			"\"st_atime\":null,"
 			"\"st_mtime\":null,"
 			"\"st_ctime\":null,"
-			"\"stx_btime\":null"
+			"\"stx_btime\":null,"
+			"\"stx_dtime\":null"
 			"}\n",
 			escapeStrforJSON(entryPath).c_str(),
 			dirEntryJSONType.c_str() );
@@ -1175,6 +1195,9 @@ void processDiscoveredEntry(const std::string& entryPath, const struct dirent* d
 		return;
 
 	if(!filterPrintEntryByUIDAndGID(entryPath, dirEntry, statBuf) )
+		return;
+
+	if(!filterPrintEntryByDTime(entryPath, dirEntry, statBuf) )
 		return;
 
 	// print entry
@@ -1442,6 +1465,7 @@ void printUsageAndExit()
 	std::cout << "                       destination have to be dirs." << std::endl;
 	std::cout << "  --ctime NUM        - ctime filter based on number of days in the past." << std::endl;
 	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
+	std::cout << "  --dtime NUM        - Filter where access time minus modification time is less than NUM seconds." << std::endl;
 	std::cout << "  --excludedir REGEX - Exclude directories from scanning whose path matches" << std::endl;
 	std::cout << "                       the given regular expression. You can specify this option" << std::endl;
 	std::cout << "                       multiple times to exclude dirs matching any of the" << std::endl;
@@ -1778,6 +1802,7 @@ void parseArguments(int argc, char** argv)
 				{ ARG_EXEC_LONG, no_argument, 0, 0 },
 				{ ARG_FILTER_ATIME, required_argument, 0, 0 },
 				{ ARG_FILTER_CTIME, required_argument, 0, 0 },
+				{ ARG_FILTER_DTIME, required_argument, 0, 0 },
 				{ ARG_FILTER_MTIME, required_argument, 0, 0 },
 				{ ARG_FILTER_SIZE, required_argument, 0, 0 },
 				{ ARG_GID_LONG, required_argument, 0, 0 },
@@ -1870,6 +1895,13 @@ void parseArguments(int argc, char** argv)
 				else
 				if(ARG_FILTER_CTIME == currentOptionName)
 					PARSE_EXACT_LESS_GREATER_VAL(optarg, ctime, CTIME);
+				else
+				if(ARG_FILTER_DTIME == currentOptionName)
+				{
+					config.filterDTime = std::stoll(optarg);
+					config.filterDTimeEnabled = true;
+					config.statAll = true;
+				}
 				else
 				if(ARG_FILTER_MTIME == currentOptionName)
 					PARSE_EXACT_LESS_GREATER_VAL(optarg, mtime, MTIME);
