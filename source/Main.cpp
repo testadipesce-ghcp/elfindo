@@ -45,8 +45,10 @@
 
 // note: these arg defines are alphabetically ordered by option string value
 #define ARG_FILTER_ATIME	"atime"
+#define ARG_FILTER_ATS		"ats"
 #define ARG_FILTER_BTIME	"btime"
 #define ARG_FILTER_DTIME	"dtime"
+#define ARG_FILTER_DTIME_GREATER	"Dtime"
 #define ARG_FILTER_ZTIME	"ztime"
 #define ARG_ACLCHECK_LONG	"aclcheck"
 #define ARG_COPYDEST_LONG	"copyto"
@@ -62,6 +64,7 @@
 #define ARG_MAXDEPTH_LONG	"maxdepth"
 #define ARG_MOUNT_LONG		"mount"
 #define ARG_FILTER_MTIME	"mtime"
+#define ARG_FILTER_MTS		"mts"
 #define ARG_NAME_LONG		"name"
 #define ARG_NEWER_LONG		"newer"
 #define ARG_NOCOPYERR_LONG	"nocopyerr"
@@ -200,6 +203,8 @@ struct Config
 	uint64_t filterMountID {~0ULL}; // stay on mountpoint
 	bool filterDTimeEnabled {false};
 	int64_t filterDTime {0};
+	bool filterDTimeGreaterEnabled {false};
+	int64_t filterDTimeGreater {0};
 	bool filterZTimeEnabled {false};
 	int64_t filterZTime {0};
 	std::string copyDestDir; // target dir for file/dir copies
@@ -680,10 +685,12 @@ bool filterPrintEntryByUIDAndGID(const std::string& entryPath, const struct dire
 bool filterPrintEntryByDTime(const std::string& entryPath, const struct dirent* dirEntry,
 	const EntryStat* statBuf)
 {
-	if(!config.filterDTimeEnabled)
+	if(!config.filterDTimeEnabled && !config.filterDTimeGreaterEnabled)
 		return true;
 
-	return statBuf && (statBuf->stx_dtime <= config.filterDTime);
+	return statBuf &&
+		(!config.filterDTimeEnabled || statBuf->stx_dtime <= config.filterDTime) &&
+		(!config.filterDTimeGreaterEnabled || statBuf->stx_dtime >= config.filterDTimeGreater);
 }
 
 /**
@@ -1161,9 +1168,9 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			"\"st_atime\":\"%" PRIu64 "\","
 			"\"st_mtime\":\"%" PRIu64 "\","
 				"\"st_ctime\":\"%" PRIu64 "\","
-				"\"stx_btime\":%s,"
-				"\"stx_dtime\":\"%" PRId64 "\","
-				"\"stx_ztime\":\"%" PRId64 "\""
+				"\"st_btime\":%s,"
+				"\"st_dtime\":\"%" PRId64 "\","
+				"\"st_ztime\":\"%" PRId64 "\""
 			"}\n",
 			escapeStrforJSON(entryPath).c_str(),
 			dirEntryJSONType.c_str(),
@@ -1202,9 +1209,9 @@ void printEntry(const std::string& entryPath, const struct dirent* dirEntry,
 			"\"st_atime\":null,"
 			"\"st_mtime\":null,"
 			"\"st_ctime\":null,"
-			"\"stx_btime\":null,"
-			"\"stx_dtime\":null,"
-			"\"stx_ztime\":null"
+				"\"st_btime\":null,"
+				"\"st_dtime\":null,"
+				"\"st_ztime\":null"
 			"}\n",
 			escapeStrforJSON(entryPath).c_str(),
 			dirEntryJSONType.c_str() );
@@ -1325,7 +1332,10 @@ void scan(std::string path, const unsigned short dirDepth)
 		// Keep scanning directories, but avoid stat() for known non-directories.
 		if(!nameFilterMatches && (dirEntry->d_type != DT_DIR) &&
 			(dirEntry->d_type != DT_UNKNOWN) )
+		{
+			statistics.numFilesFound++;
 			continue;
+		}
 
 		EntryStat statBuf;
 		int statErrno = -1; // "-1" to let clear that statBuf is not usable yet
@@ -1466,8 +1476,9 @@ void printSummary()
 
 	std::cerr << "  * entries found: " <<
 			"files: " << statistics.numFilesFound << "; " <<
-			"dirs: " << statistics.numDirsFound << "; " <<
-			"filter matches: " << statistics.numFilterMatches << std::endl;
+						"dirs: " << statistics.numDirsFound << std::endl;
+
+	std::cerr << "  * filter matches: " << statistics.numFilterMatches << std::endl;
 
 	std::cerr << "  * special cases: " <<
 			"unknown type: " << statistics.numUnknownFound << "; " <<
@@ -1506,6 +1517,8 @@ void printUsageAndExit()
 	std::cout << "OPTIONS (in alphabetical order):" << std::endl;
 	std::cout << "  --atime NUM        - atime filter based on number of days in the past." << std::endl;
 	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
+	std::cout << "  --ats NUM          - atime filter based on number of seconds in the past." << std::endl;
+	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --btime NUM        - creation time filter based on number of days in the past." << std::endl;
 	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --aclcheck         - Query ACLs of all discovered entries." << std::endl;
@@ -1517,6 +1530,7 @@ void printUsageAndExit()
 	std::cout << "  --ctime NUM        - ctime filter based on number of days in the past." << std::endl;
 	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --dtime NUM        - Filter where access time minus modification time is less than NUM seconds." << std::endl;
+	std::cout << "  --Dtime NUM        - Filter where access time minus modification time is at least NUM seconds." << std::endl;
 	std::cout << "  --ztime NUM        - Filter where access time minus creation time is less than NUM seconds." << std::endl;
 	std::cout << "  --excludedir REGEX - Exclude directories from scanning whose path matches" << std::endl;
 	std::cout << "                       the given regular expression. You can specify this option" << std::endl;
@@ -1540,6 +1554,8 @@ void printUsageAndExit()
 	std::cout << "                       depth 0.)" << std::endl;
 	std::cout << "  --mount            - Alias for \"--xdev\"." << std::endl;
 	std::cout << "  --mtime NUM        - mtime filter based on number of days in the past." << std::endl;
+	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
+	std::cout << "  --mts NUM          - mtime filter based on number of seconds in the past." << std::endl;
 	std::cout << "                       +/- prefix to match older or more recent values." << std::endl;
 	std::cout << "  --name PATTERN     - Filter on name of file or current dir. Pattern may" << std::endl;
 	std::cout << "                       contain '*' & '?' as wildcards. This parameter can be" << std::endl;
@@ -1661,7 +1677,8 @@ std::string parseSizeArgSuffix(std::string userVal)
  */
 void parseExactLessGreaterVal(std::string userVal,
 	uint64_t& exactCfgVal, uint64_t& lessCfgVal, uint64_t& greaterCfgVal,
-	unsigned exactCfgFlag, unsigned lessCfgFlag, unsigned greaterCfgFlag)
+	unsigned exactCfgFlag, unsigned lessCfgFlag, unsigned greaterCfgFlag,
+	bool timeInSeconds = false)
 {
 	if(userVal.empty() )
 		return;
@@ -1717,12 +1734,13 @@ void parseExactLessGreaterVal(std::string userVal,
 		*actualCfgValPtr = std::stoull(userVal);
 	}
 	else
-	{ // {a,c,m}time, so we have to substract user val times 24h from current time
+		{ // time, so we have to subtract user val from current time
 		const uint64_t secsPerDay = 60 * 60 * 24;
+			const uint64_t timeUnit = timeInSeconds ? 1 : secsPerDay;
 
 		time_t nowT = time(NULL);
 
-		*actualCfgValPtr = nowT - (std::stoull(userVal) * secsPerDay);
+			*actualCfgValPtr = nowT - (std::stoull(userVal) * timeUnit);
 	}
 }
 
@@ -1853,10 +1871,13 @@ void parseArguments(int argc, char** argv)
 				{ ARG_EXCLUDEDIR_LONG, required_argument, 0, 0 },
 				{ ARG_EXEC_LONG, no_argument, 0, 0 },
 				{ ARG_FILTER_ATIME, required_argument, 0, 0 },
+						{ ARG_FILTER_ATS, required_argument, 0, 0 },
 				{ ARG_FILTER_CTIME, required_argument, 0, 0 },
+						{ ARG_FILTER_DTIME_GREATER, required_argument, 0, 0 },
 				{ ARG_FILTER_DTIME, required_argument, 0, 0 },
 				{ ARG_FILTER_ZTIME, required_argument, 0, 0 },
 				{ ARG_FILTER_MTIME, required_argument, 0, 0 },
+						{ ARG_FILTER_MTS, required_argument, 0, 0 },
 				{ ARG_FILTER_SIZE, required_argument, 0, 0 },
 				{ ARG_GID_LONG, required_argument, 0, 0 },
 				{ ARG_GODEEP_LONG, required_argument, 0, 0 },
@@ -1946,6 +1967,16 @@ void parseArguments(int argc, char** argv)
 				if(ARG_FILTER_ATIME == currentOptionName)
 					PARSE_EXACT_LESS_GREATER_VAL(optarg, atime, ATIME);
 				else
+								if(ARG_FILTER_ATS == currentOptionName)
+									parseExactLessGreaterVal(optarg,
+										config.filterSizeAndTime.atimeExact,
+										config.filterSizeAndTime.atimeLess,
+										config.filterSizeAndTime.atimeGreater,
+										FILTER_FLAG_ATIME_EXACT,
+										FILTER_FLAG_ATIME_LESS,
+										FILTER_FLAG_ATIME_GREATER,
+										true);
+								else
 				if(ARG_FILTER_CTIME == currentOptionName)
 					PARSE_EXACT_LESS_GREATER_VAL(optarg, ctime, CTIME);
 				else
@@ -1956,6 +1987,13 @@ void parseArguments(int argc, char** argv)
 					config.statAll = true;
 				}
 				else
+								if(ARG_FILTER_DTIME_GREATER == currentOptionName)
+								{
+									config.filterDTimeGreater = std::stoll(optarg);
+									config.filterDTimeGreaterEnabled = true;
+									config.statAll = true;
+								}
+								else
 				if(ARG_FILTER_ZTIME == currentOptionName)
 				{
 					config.filterZTime = std::stoll(optarg);
@@ -1966,6 +2004,16 @@ void parseArguments(int argc, char** argv)
 				if(ARG_FILTER_MTIME == currentOptionName)
 					PARSE_EXACT_LESS_GREATER_VAL(optarg, mtime, MTIME);
 				else
+								if(ARG_FILTER_MTS == currentOptionName)
+									parseExactLessGreaterVal(optarg,
+										config.filterSizeAndTime.mtimeExact,
+										config.filterSizeAndTime.mtimeLess,
+										config.filterSizeAndTime.mtimeGreater,
+										FILTER_FLAG_MTIME_EXACT,
+										FILTER_FLAG_MTIME_LESS,
+										FILTER_FLAG_MTIME_GREATER,
+										true);
+								else
 				if(ARG_FILTER_SIZE == currentOptionName)
 					PARSE_EXACT_LESS_GREATER_VAL(optarg, size, SIZE);
 				else
