@@ -1496,6 +1496,8 @@ void printSummary()
 void printUsageAndExit()
 {
 	std::cout << EXE_NAME " - Parallel search for files & dirs" << std::endl;
+	std::cout << EXE_NAME " - [EC/syg feature enhanced version with dtime, btime, stat-less name filter, ...]" << std::endl;
+	std::cout << EXE_NAME " - [https://github.com/testadipesce-ghcp/elfindo]" << std::endl;
 	std::cout << std::endl;
 	std::cout << "VERSION: " EXE_VERSION << std::endl;
 	std::cout << std::endl;

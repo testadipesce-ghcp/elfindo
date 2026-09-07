@@ -21,4 +21,5 @@
 
 # Misc
 excluded/
+bin/
 todo.txt
